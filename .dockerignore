@@ -1,0 +1,11 @@
+.git
+.github
+docs
+tests
+*.md
+*.rst
+LICENSE
+__pycache__
+*.py[cod]
+.venv
+venv

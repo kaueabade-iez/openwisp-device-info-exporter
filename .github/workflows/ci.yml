@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install QA tools
+        run: pip install black flake8
+
+      - name: Check formatting (black)
+        run: black --check .
+
+      - name: Lint (flake8)
+        run: flake8 .
+
+      - name: Byte-compile
+        run: python -m compileall openwisp_device_info_exporter
+
+  docker:
+    name: Build image
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the Docker image
+        run: docker build -t openwisp/openwisp-device-info-exporter:edge .
