@@ -25,7 +25,7 @@ Architecture
 
 ::
 
-    exporter --(internal)--> api:8001         (device list, Bearer token)
+    exporter --(internal)--> api.internal     (device list, Bearer token)
              --(internal)--> vmagent:8429/api/v1/import/prometheus
                                   └--> external VictoriaMetrics (remote_write)
 

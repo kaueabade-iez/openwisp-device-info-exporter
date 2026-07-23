@@ -51,8 +51,7 @@ Run it (all configuration is via environment variables)::
 
     docker run --rm \
         -e OPENWISP_API_TOKEN=<token> \
-        -e API_DOMAIN=api.openwisp.org \
-        -e OPENWISP_API_URL=http://api:8001 \
+        -e API_INTERNAL=api.internal \
         -e VM_IMPORT_URL=http://vmagent:8429/api/v1/import/prometheus \
         openwisp/openwisp-device-info-exporter:edge
 
@@ -64,9 +63,11 @@ Environment variable         Description                                        
 ============================ ============================================================ ===================================================
 ``OPENWISP_API_TOKEN``       Bearer token used to read the device list. Create it in the  (required)
                              Django admin (*Tokens*) or via ``POST /api/v1/users/token/``.
-``OPENWISP_API_URL``         Base URL of the OpenWISP API (internal service address).     ``http://api:8001``
-``OPENWISP_API_HOST``        ``Host`` header sent to the API so Django's ``ALLOWED_HOSTS``  falls back to ``API_DOMAIN``
-                             accepts the internal request.
+``API_INTERNAL``             Internal hostname of the OpenWISP API (the docker-openwisp    ``api.internal``
+                             nginx internal alias). The exporter reaches it over http on
+                             port 80 and sends this same name as the ``Host`` header, so
+                             nginx hits its internal server block (no HTTPS redirect) and
+                             Django's ``ALLOWED_HOSTS`` accepts the request.
 ``VM_IMPORT_URL``            VictoriaMetrics / vmagent Prometheus import endpoint.        ``http://vmagent:8429/api/v1/import/prometheus``
 ``DEVICE_INFO_INTERVAL``     Refresh interval in seconds (keep below VM's 5m staleness).  ``120``
 ``DEVICE_INFO_PAGE_SIZE``    Device list API page size.                                   ``100``

@@ -5,13 +5,17 @@ import logging
 import os
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("openwisp_device_info_exporter")
 
-OPENWISP_API_URL = os.environ.get("OPENWISP_API_URL", "http://api:8001").rstrip("/")
-OPENWISP_API_HOST = os.environ.get("OPENWISP_API_HOST") or os.environ.get("API_DOMAIN")
+API_INTERNAL = os.environ.get("API_INTERNAL", "api.internal")
+OPENWISP_API_INTERNAL = (
+    API_INTERNAL if "://" in API_INTERNAL else f"http://{API_INTERNAL}"
+).rstrip("/")
+OPENWISP_API_HOST = urllib.parse.urlsplit(OPENWISP_API_INTERNAL).hostname
 OPENWISP_API_TOKEN = os.environ.get("OPENWISP_API_TOKEN", "")
 
 VM_IMPORT_URL = os.environ.get(
@@ -54,7 +58,7 @@ def fetch_devices():
     page = 1
     while True:
         url = (
-            f"{OPENWISP_API_URL}/api/v1/controller/device/"
+            f"{OPENWISP_API_INTERNAL}/api/v1/controller/device/"
             f"?page={page}&page_size={PAGE_SIZE}"
         )
         req = urllib.request.Request(url, headers=headers)
@@ -99,7 +103,7 @@ def run_once():
 def main():
     logger.info(
         "starting; api=%s vm=%s interval=%ss",
-        OPENWISP_API_URL,
+        OPENWISP_API_INTERNAL,
         VM_IMPORT_URL,
         INTERVAL,
     )
