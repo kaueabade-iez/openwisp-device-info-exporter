@@ -3,16 +3,19 @@
 ## Project Overview
 
 `openwisp-device-info-exporter` is a small, dependency-free Python service that
-publishes an `openwisp_device_info` metric into VictoriaMetrics, mapping each
-OpenWISP device UUID (`object_id`) to its human-readable name and attributes.
-It is packaged as a Docker image and deployed alongside a `vmagent` relay in a
-`docker-openwisp` stack.
+publishes two metrics into VictoriaMetrics from a single loop: `openwisp_device_info`,
+mapping each OpenWISP device UUID (`object_id`) to its human-readable name and
+attributes, and `openwisp_interface_up`, the per-interface up/down state that
+OpenWISP never forwards on its own. It is packaged as a Docker image and
+deployed alongside a `vmagent` relay in a `docker-openwisp` stack.
 
 Core code lives in `openwisp_device_info_exporter/`:
 
 - `exporter.py` contains the whole exporter: reading the OpenWISP device list
-  from the REST API and pushing the info metric to the VictoriaMetrics/vmagent
-  Prometheus import endpoint.
+  and per-device interface status from the REST API (the latter fetched
+  concurrently via a bounded `ThreadPoolExecutor`, reusing the same device list
+  fetched once per cycle), and pushing both metrics to a
+  VictoriaMetrics/vmagent Prometheus import endpoint.
 - `__main__.py` is the container entrypoint (`python -m openwisp_device_info_exporter`).
 
 ## Source of Truth

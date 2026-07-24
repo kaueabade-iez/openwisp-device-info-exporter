@@ -11,10 +11,11 @@ openwisp-device-info-exporter
 
 ----
 
-Publishes an OpenWISP **device info metric** into VictoriaMetrics so that time
-series forwarded from the internal InfluxDB (which are tagged only by the device
-UUID, ``object_id``) can be enriched with the human-readable device name at
-query time.
+Publishes two metrics into VictoriaMetrics: an OpenWISP **device info metric**
+so that time series forwarded from the internal InfluxDB (which are tagged only
+by the device UUID, ``object_id``) can be enriched with the human-readable
+device name at query time, and an **interface up/down metric** that OpenWISP
+never forwards on its own.
 
 **Why this exists**
 
@@ -30,6 +31,17 @@ Queries can then attach the name (and other attributes) with a ``group_left``
 join, evaluated server-side by VictoriaMetrics ::
 
     traffic_rx_bytes * on(object_id) group_left(name) openwisp_device_info
+
+Interface state is a second, related gap: OpenWISP's InfluxDB writer never
+emits a metric for an interface's ``up``/``down`` state, so it never reaches
+the forwarded ``autogen`` retention policy either. The exporter reads it
+straight from each device's monitoring status REST endpoint and publishes ::
+
+    openwisp_interface_up{object_id="<uuid>", ifname="<name>"} 1
+
+A value of ``1`` means the interface is up, ``0`` means it is down. A series is
+only emitted for interfaces observed in the current cycle; see `docs/index.rst
+<docs/index.rst>`_ for how unreachable devices are handled.
 
 The exporter uses only the Python standard library.
 
@@ -68,6 +80,8 @@ Environment variable         Description                                        
 ``DEVICE_INFO_INTERVAL``     Refresh interval in seconds (keep below VM's 5m staleness).  ``120``
 ``DEVICE_INFO_PAGE_SIZE``    Device list API page size.                                   ``100``
 ``DEVICE_INFO_HTTP_TIMEOUT`` Per-request HTTP timeout in seconds.                         ``30``
+``INTERFACE_UP_MAX_WORKERS`` Max concurrent per-device status requests for the interface   ``8``
+                             up/down metric.
 ============================ ============================================================ ===================================================
 
 Deploying with docker-openwisp
