@@ -2,7 +2,7 @@
 FROM python:3.13-slim
 
 LABEL org.opencontainers.image.title="openwisp-device-info-exporter" \
-    org.opencontainers.image.description="Publishes OpenWISP device UUID->name info and metrics to VictoriaMetrics" \
+    org.opencontainers.image.description="Publishes OpenWISP device UUID->name info, interface up/down, and boot time metrics to VictoriaMetrics" \
     org.opencontainers.image.source="https://github.com/kaueabade-iez/openwisp-device-info-exporter" \
     org.opencontainers.image.licenses="BSD-3-Clause"
 
