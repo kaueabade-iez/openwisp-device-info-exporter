@@ -30,6 +30,7 @@ MAX_WORKERS = int(os.environ.get("DEVICE_INFO_MAX_WORKERS", "8"))
 
 METRIC_NAME = "openwisp_device_info"
 INTERFACE_METRIC_NAME = "openwisp_interface_up"
+BOOT_TIME_METRIC_NAME = "openwisp_boot_time_seconds"
 
 # API field -> Prometheus label
 LABEL_FIELDS = {
@@ -87,7 +88,7 @@ def build_device_info_exposition(devices):
 
 
 def fetch_status(device):
-    """Fetch the interface list from a device's monitoring status endpoint."""
+    """Fetch the status data blob from a device's monitoring status endpoint."""
     headers = {"Authorization": f"Bearer {OPENWISP_API_TOKEN}"}
     if OPENWISP_API_HOST:
         headers["Host"] = OPENWISP_API_HOST
@@ -97,33 +98,40 @@ def fetch_status(device):
     req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
         payload = json.load(resp)
-    return payload.get("data", {}).get("interfaces", [])
+    return payload.get("data", {})
 
 
-def collect_interfaces(devices):
-    """Fetch interface status for every device concurrently.
+def collect_status(devices):
+    """Fetch monitoring status data for every device concurrently.
 
     Devices whose status fetch fails are skipped: we cannot enumerate their
-    interfaces, so we must not report them as up or down for this cycle.
+    interfaces or derive their boot time, so we must not report anything for
+    this cycle.
     """
-    rows = []
+    interface_rows = []
+    boot_time_rows = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
         futures = {pool.submit(fetch_status, device): device for device in devices}
         for future in concurrent.futures.as_completed(futures):
             device = futures[future]
             try:
-                interfaces = future.result()
+                data = future.result()
             except Exception as exc:  # noqa: BLE001 - isolate one bad device
                 logger.error(
                     "failed to fetch status for device %s: %s", device.get("id"), exc
                 )
                 continue
-            for interface in interfaces:
+            for interface in data.get("interfaces", []):
                 ifname = interface.get("name")
                 if not ifname:
                     continue
-                rows.append((device["id"], ifname, bool(interface.get("up"))))
-    return rows
+                interface_rows.append((device["id"], ifname, bool(interface.get("up"))))
+            general = data.get("general", {})
+            local_time = general.get("local_time")
+            uptime = general.get("uptime")
+            if local_time is not None and uptime is not None:
+                boot_time_rows.append((device["id"], local_time - uptime))
+    return interface_rows, boot_time_rows
 
 
 def build_interface_exposition(rows):
@@ -135,6 +143,18 @@ def build_interface_exposition(rows):
     for object_id, ifname, up in rows:
         labels = f'object_id="{_escape(object_id)}",ifname="{_escape(ifname)}"'
         lines.append(f"{INTERFACE_METRIC_NAME}{{{labels}}} {1 if up else 0}")
+    return "\n".join(lines) + "\n"
+
+
+def build_boot_time_exposition(rows):
+    lines = [
+        f"# HELP {BOOT_TIME_METRIC_NAME} Unix timestamp of the device's last boot "
+        "(general.local_time - general.uptime).",
+        f"# TYPE {BOOT_TIME_METRIC_NAME} gauge",
+    ]
+    for object_id, boot_time in rows:
+        labels = f'object_id="{_escape(object_id)}"'
+        lines.append(f"{BOOT_TIME_METRIC_NAME}{{{labels}}} {boot_time}")
     return "\n".join(lines) + "\n"
 
 
@@ -152,12 +172,14 @@ def push(exposition):
 def run_once():
     devices = list(fetch_devices())
     push(build_device_info_exposition(devices))
-    interfaces = collect_interfaces(devices)
+    interfaces, boot_times = collect_status(devices)
     push(build_interface_exposition(interfaces))
+    push(build_boot_time_exposition(boot_times))
     logger.info(
-        "published %s device info and %s interface_up series",
+        "published %s device info, %s interface_up, and %s boot_time series",
         len(devices),
         len(interfaces),
+        len(boot_times),
     )
 
 
