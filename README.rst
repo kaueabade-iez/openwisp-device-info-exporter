@@ -87,8 +87,7 @@ the same ``.env`` as the other services)::
 
 Set ``OPENWISP_API_TOKEN`` in ``.env`` and start the service.
 
-See `docs/index.rst <docs/index.rst>`_ for the full documentation, including the
-alternative "bake the name at ingest with relabeling" approach.
+See `docs/index.rst <docs/index.rst>`_ for the full documentation.
 
 License
 -------
