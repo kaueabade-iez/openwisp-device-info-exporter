@@ -98,7 +98,7 @@ def fetch_status(device):
     req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
         payload = json.load(resp)
-    return payload.get("data", {})
+    return payload.get("data") or {}
 
 
 def collect_status(devices):
@@ -121,12 +121,12 @@ def collect_status(devices):
                     "failed to fetch status for device %s: %s", device.get("id"), exc
                 )
                 continue
-            for interface in data.get("interfaces", []):
+            for interface in data.get("interfaces") or []:
                 ifname = interface.get("name")
                 if not ifname:
                     continue
                 interface_rows.append((device["id"], ifname, bool(interface.get("up"))))
-            general = data.get("general", {})
+            general = data.get("general") or {}
             local_time = general.get("local_time")
             uptime = general.get("uptime")
             if local_time is not None and uptime is not None:
