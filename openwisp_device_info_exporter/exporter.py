@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import concurrent.futures
 import json
 import logging
 import os
@@ -25,8 +26,10 @@ VM_IMPORT_URL = os.environ.get(
 INTERVAL = int(os.environ.get("DEVICE_INFO_INTERVAL", "120"))
 PAGE_SIZE = int(os.environ.get("DEVICE_INFO_PAGE_SIZE", "100"))
 HTTP_TIMEOUT = int(os.environ.get("DEVICE_INFO_HTTP_TIMEOUT", "30"))
+MAX_WORKERS = int(os.environ.get("DEVICE_INFO_MAX_WORKERS", "8"))
 
 METRIC_NAME = "openwisp_device_info"
+INTERFACE_METRIC_NAME = "openwisp_interface_up"
 
 # API field -> Prometheus label
 LABEL_FIELDS = {
@@ -70,7 +73,7 @@ def fetch_devices():
         page += 1
 
 
-def build_exposition(devices):
+def build_device_info_exposition(devices):
     lines = [
         f"# HELP {METRIC_NAME} OpenWISP device metadata mapping (value is always 1).",
         f"# TYPE {METRIC_NAME} gauge",
@@ -80,6 +83,58 @@ def build_exposition(devices):
         for field, label in LABEL_FIELDS.items():
             labels.append(f'{label}="{_escape(device.get(field))}"')
         lines.append(f"{METRIC_NAME}{{{','.join(labels)}}} 1")
+    return "\n".join(lines) + "\n"
+
+
+def fetch_status(device):
+    """Fetch the interface list from a device's monitoring status endpoint."""
+    headers = {"Authorization": f"Bearer {OPENWISP_API_TOKEN}"}
+    if OPENWISP_API_HOST:
+        headers["Host"] = OPENWISP_API_HOST
+    url = (
+        f"{OPENWISP_API_INTERNAL}/api/v1/monitoring/device/{device['id']}/?status=true"
+    )
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+        payload = json.load(resp)
+    return payload.get("data", {}).get("interfaces", [])
+
+
+def collect_interfaces(devices):
+    """Fetch interface status for every device concurrently.
+
+    Devices whose status fetch fails are skipped: we cannot enumerate their
+    interfaces, so we must not report them as up or down for this cycle.
+    """
+    rows = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        futures = {pool.submit(fetch_status, device): device for device in devices}
+        for future in concurrent.futures.as_completed(futures):
+            device = futures[future]
+            try:
+                interfaces = future.result()
+            except Exception as exc:  # noqa: BLE001 - isolate one bad device
+                logger.error(
+                    "failed to fetch status for device %s: %s", device.get("id"), exc
+                )
+                continue
+            for interface in interfaces:
+                ifname = interface.get("name")
+                if not ifname:
+                    continue
+                rows.append((device["id"], ifname, bool(interface.get("up"))))
+    return rows
+
+
+def build_interface_exposition(rows):
+    lines = [
+        f"# HELP {INTERFACE_METRIC_NAME} OpenWISP interface operational state "
+        "(1=up, 0=down).",
+        f"# TYPE {INTERFACE_METRIC_NAME} gauge",
+    ]
+    for object_id, ifname, up in rows:
+        labels = f'object_id="{_escape(object_id)}",ifname="{_escape(ifname)}"'
+        lines.append(f"{INTERFACE_METRIC_NAME}{{{labels}}} {1 if up else 0}")
     return "\n".join(lines) + "\n"
 
 
@@ -96,8 +151,14 @@ def push(exposition):
 
 def run_once():
     devices = list(fetch_devices())
-    push(build_exposition(devices))
-    logger.info("published %s device info series", len(devices))
+    push(build_device_info_exposition(devices))
+    interfaces = collect_interfaces(devices)
+    push(build_interface_exposition(interfaces))
+    logger.info(
+        "published %s device info and %s interface_up series",
+        len(devices),
+        len(interfaces),
+    )
 
 
 def main():
