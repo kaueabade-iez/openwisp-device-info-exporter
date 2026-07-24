@@ -1,10 +1,6 @@
 openwisp-device-info-exporter
 =============================
 
-.. image:: https://github.com/openwisp/openwisp-device-info-exporter/actions/workflows/ci.yml/badge.svg
-    :target: https://github.com/openwisp/openwisp-device-info-exporter/actions/workflows/ci.yml
-    :alt: CI build status
-
 .. image:: https://img.shields.io/badge/license-BSD--3--Clause-blue.svg
     :target: https://github.com/openwisp/openwisp-device-info-exporter/blob/master/LICENSE
     :alt: License
