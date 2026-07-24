@@ -11,11 +11,12 @@ openwisp-device-info-exporter
 
 ----
 
-Publishes two metrics into VictoriaMetrics: an OpenWISP **device info metric**
+Publishes three metrics into VictoriaMetrics: an OpenWISP **device info metric**
 so that time series forwarded from the internal InfluxDB (which are tagged only
 by the device UUID, ``object_id``) can be enriched with the human-readable
-device name at query time, and an **interface up/down metric** that OpenWISP
-never forwards on its own.
+device name at query time, an **interface up/down metric** that OpenWISP
+never forwards on its own, and a **boot time metric** derived from the
+device's uptime, since OpenWISP never forwards a boot/uptime metric either.
 
 **Why this exists**
 
@@ -42,6 +43,19 @@ straight from each device's monitoring status REST endpoint and publishes ::
 A value of ``1`` means the interface is up, ``0`` means it is down. A series is
 only emitted for interfaces observed in the current cycle; see `docs/index.rst
 <docs/index.rst>`_ for how unreachable devices are handled.
+
+Boot time is a third, related gap: OpenWISP's InfluxDB writer never emits a
+boot/uptime metric either, and there is no direct boot-timestamp field in the
+API. The exporter derives it from the same monitoring status payload as the
+interface metric (``general.local_time - general.uptime``, both captured at
+the same measurement instant) and publishes ::
+
+    openwisp_boot_time_seconds{object_id="<uuid>"} 1737600000
+
+The value is the Unix timestamp of the device's last boot; correctness depends
+on the device's clock being NTP-synced. A series is only emitted for devices
+where both ``general.local_time`` and ``general.uptime`` are present in the
+current cycle; see `docs/index.rst <docs/index.rst>`_ for details.
 
 The exporter uses only the Python standard library.
 
@@ -81,7 +95,7 @@ Environment variable         Description                                        
 ``DEVICE_INFO_PAGE_SIZE``    Device list API page size.                                   ``100``
 ``DEVICE_INFO_HTTP_TIMEOUT`` Per-request HTTP timeout in seconds.                         ``30``
 ``INTERFACE_UP_MAX_WORKERS`` Max concurrent per-device status requests for the interface   ``8``
-                             up/down metric.
+                             up/down and boot time metrics.
 ============================ ============================================================ ===================================================
 
 Deploying with docker-openwisp

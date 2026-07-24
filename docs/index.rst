@@ -1,10 +1,11 @@
 OpenWISP Device Info Exporter
 =============================
 
-The **openwisp-device-info-exporter** is a single process that publishes two
+The **openwisp-device-info-exporter** is a single process that publishes three
 Prometheus metrics into VictoriaMetrics: an *info metric* that maps each
-OpenWISP device UUID to its human-readable name (and a few attributes), and an
-interface up/down metric that OpenWISP itself never forwards.
+OpenWISP device UUID to its human-readable name (and a few attributes), an
+interface up/down metric that OpenWISP itself never forwards, and a boot time
+metric derived from the device's uptime.
 
 Background
 ----------
@@ -34,6 +35,18 @@ per cycle, and publishes::
 
     openwisp_interface_up{object_id="<uuid>", ifname="<name>"} 1
 
+A third, related gap is boot time: OpenWISP's InfluxDB writer never emits a
+boot/uptime metric either, and there is no direct boot-timestamp field in the
+API. The same monitoring status payload used for the interface metric also
+carries a ``general`` block with two integers: ``uptime`` (seconds since boot)
+and ``local_time`` (the device's Unix timestamp at the moment of the
+measurement). Both are captured at the same instant, so their difference is
+the boot epoch and is immune to how stale the cached snapshot is — as the
+snapshot ages, both values drift up together. The exporter derives it as
+``general.local_time - general.uptime`` and publishes::
+
+    openwisp_boot_time_seconds{object_id="<uuid>"} 1737600000
+
 Architecture
 ------------
 
@@ -44,13 +57,15 @@ Architecture
              --(internal)--> vmagent:8429/api/v1/import/prometheus
                                   └--> external VictoriaMetrics (remote_write)
 
-Each cycle, the exporter fetches the device list once and reuses it for both
-metrics: it pushes the device info metric first, then fetches every device's
-interface status concurrently (bounded by ``INTERFACE_UP_MAX_WORKERS``) and
-pushes the interface up/down metric. Both metrics are pushed to ``vmagent``'s
-Prometheus import endpoint, which forwards them to VictoriaMetrics reusing
-``vmagent``'s disk buffering and remote_write authentication. Only the Python
-standard library is used.
+Each cycle, the exporter fetches the device list once and reuses it for all
+three metrics: it pushes the device info metric first, then fetches every
+device's monitoring status concurrently (bounded by
+``INTERFACE_UP_MAX_WORKERS``) — a single request per device yields both its
+interface list and its ``general`` block — and pushes the interface up/down
+and boot time metrics from that one pass. All metrics are pushed to
+``vmagent``'s Prometheus import endpoint, which forwards them to
+VictoriaMetrics reusing ``vmagent``'s disk buffering and remote_write
+authentication. Only the Python standard library is used.
 
 Interface up/down semantics
 ----------------------------
@@ -71,6 +86,26 @@ Interface up/down semantics
   interfaces disappear from instant queries.
 - One failing device never aborts the cycle: each per-device fetch is isolated
   and errors are logged individually.
+
+Boot time semantics
+--------------------
+
+- The only label is ``object_id`` — join the device name at query time (see
+  below), like the other forwarded metrics.
+- A series is only emitted for a device where both ``general.local_time`` and
+  ``general.uptime`` are present in the current cycle's status payload. If the
+  device is unreachable or ``general`` is missing either field, the exporter
+  emits nothing for it rather than falling back to ``now() - uptime``, which
+  would fabricate a value skewed by exporter/device clock drift; the series
+  simply goes stale and falls out of instant queries after VictoriaMetrics'
+  default 5-minute staleness window.
+- Because the boot timestamp is stable while a device stays up, staleness only
+  matters right after a reboot or when a device drops off — both acceptable at
+  the default 120s interval, well under the 5-minute lookback.
+- Correctness depends on the device's clock being NTP-synced; a device with a
+  wrong clock will report a wrong boot timestamp (though it will still be
+  internally consistent, since both ``local_time`` and ``uptime`` come from
+  the same clock).
 
 Configuration
 -------------
@@ -99,6 +134,20 @@ interfaces with their device name::
 
     openwisp_interface_up == 0
     openwisp_interface_up * on(object_id) group_left(name) openwisp_device_info
+
+The boot time metric follows the same node_boot_time_seconds idiom used by the
+Prometheus node exporter. Current uptime, computed query-side::
+
+    time() - openwisp_boot_time_seconds
+
+Reboot detection / alerting — a non-zero result means the boot timestamp
+changed within the window, i.e. the device rebooted::
+
+    changes(openwisp_boot_time_seconds[1h]) > 0
+
+Enriched with the device name::
+
+    openwisp_boot_time_seconds * on(object_id) group_left(name) openwisp_device_info
 
 Rename edge case
 ~~~~~~~~~~~~~~~~~
