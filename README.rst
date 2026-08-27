@@ -12,11 +12,10 @@ openwisp-device-info-exporter
 ----
 
 Publishes three metrics into VictoriaMetrics: an OpenWISP **device info metric**
-so that time series forwarded from the internal InfluxDB (which are tagged only
-by the device UUID, ``object_id``) can be enriched with the human-readable
-device name at query time, an **interface up/down metric** that OpenWISP
-never forwards on its own, and a **boot time metric** derived from the
-device's uptime, since OpenWISP never forwards a boot/uptime metric either.
+so that time series forwarded from the internal InfluxDB can be enriched with the
+human-readable device name at query time, an **interface up/down metric** that
+OpenWISP never forwards on its own, and a **boot time metric** derived from the
+device's uptime.
 
 **Why this exists**
 
@@ -36,19 +35,19 @@ join, evaluated server-side by VictoriaMetrics ::
 Interface state is a second, related gap: OpenWISP's InfluxDB writer never
 emits a metric for an interface's ``up``/``down`` state, so it never reaches
 the forwarded ``autogen`` retention policy either. The exporter reads it
-straight from each device's monitoring status REST endpoint and publishes ::
+directly from InfluxDB's ``short`` retention policy, where openwisp-monitoring
+already writes this exact data on every device check-in, and publishes ::
 
     openwisp_interface_up{object_id="<uuid>", ifname="<name>"} 1
 
 A value of ``1`` means the interface is up, ``0`` means it is down. A series is
-only emitted for interfaces observed in the current cycle; see `docs/index.rst
-<docs/index.rst>`_ for how unreachable devices are handled.
+only emitted for interfaces observed in the current cycle.
 
 Boot time is a third, related gap: OpenWISP's InfluxDB writer never emits a
 boot/uptime metric either, and there is no direct boot-timestamp field in the
-API. The exporter derives it from the same monitoring status payload as the
-interface metric (``general.local_time - general.uptime``, both captured at
-the same measurement instant) and publishes ::
+API. The exporter derives it from the same InfluxDB ``device_data`` payload as
+the interface metric (``general.local_time - general.uptime``, both captured
+at the same measurement instant) and publishes ::
 
     openwisp_boot_time_seconds{object_id="<uuid>"} 1737600000
 
@@ -57,7 +56,25 @@ on the device's clock being NTP-synced. A series is only emitted for devices
 where both ``general.local_time`` and ``general.uptime`` are present in the
 current cycle; see `docs/index.rst <docs/index.rst>`_ for details.
 
-The exporter uses only the Python standard library.
+The exporter has one pinned dependency, ``influxdb``, matching openwisp-
+monitoring's own version — used only to read InfluxDB directly for
+interface/boot-time data (see below).
+
+Why InfluxDB directly, not the REST status endpoint
+----------------------------------------------------
+
+``GET /api/v1/monitoring/device/<pk>/?status=true`` looks like the obvious
+source for this data, but it is not free: regardless of the ``status`` param,
+the view unconditionally recomputes **every** monitoring chart for the device
+(traffic per interface, RTT, CPU, disk, memory, uptime, packet loss), issuing
+at least 2 InfluxDB queries per chart — 3 for ``top_fields`` charts such as
+per-interface traffic. ``status=true`` only adds one extra response field
+(``data``); the rest of that work is thrown away. That same ``data`` blob is
+also written to InfluxDB independently on every device check-in, at a fixed
+location (retention policy ``short``, measurement ``device_data``, tagged by
+device UUID), so this exporter reads it directly with a single lightweight
+query instead — via the same ``influxdb`` client library openwisp-monitoring
+itself uses.
 
 Usage
 -----
@@ -80,23 +97,34 @@ Run it (all configuration is via environment variables)::
 Configuration
 -------------
 
-============================ ============================================================ ===================================================
-Environment variable         Description                                                  Default
-============================ ============================================================ ===================================================
-``OPENWISP_API_TOKEN``       Bearer token used to read the device list. Create it in the  (required)
+============================ ============================================================= ================================================
+Environment variable         Description                                                   Default
+============================ ============================================================= ================================================
+``OPENWISP_API_TOKEN``       Bearer token used to read the device list. Create it in the   (required)
                              Django admin (*Tokens*) or via ``POST /api/v1/users/token/``.
 ``API_INTERNAL``             Internal hostname of the OpenWISP API (the docker-openwisp    ``api.internal``
                              nginx internal alias). The exporter reaches it over http on
                              port 80 and sends this same name as the ``Host`` header, so
                              nginx hits its internal server block (no HTTPS redirect) and
                              Django's ``ALLOWED_HOSTS`` accepts the request.
-``VM_IMPORT_URL``            VictoriaMetrics / vmagent Prometheus import endpoint.        ``http://vmagent:8429/api/v1/import/prometheus``
-``DEVICE_INFO_INTERVAL``     Refresh interval in seconds (keep below VM's 5m staleness).  ``120``
-``DEVICE_INFO_PAGE_SIZE``    Device list API page size.                                   ``100``
-``DEVICE_INFO_HTTP_TIMEOUT`` Per-request HTTP timeout in seconds.                         ``30``
-``INTERFACE_UP_MAX_WORKERS`` Max concurrent per-device status requests for the interface   ``8``
+``VM_IMPORT_URL``            VictoriaMetrics / vmagent Prometheus import endpoint.         ``http://vmagent:8429/api/v1/import/prometheus``
+``DEVICE_INFO_INTERVAL``     Refresh interval in seconds (keep below VM's 5m staleness).   ``120``
+``DEVICE_INFO_PAGE_SIZE``    Device list API page size.                                    ``100``
+``DEVICE_INFO_HTTP_TIMEOUT`` Per-request HTTP timeout in seconds.                          ``30``
+``DEVICE_INFO_MAX_WORKERS``  Max concurrent per-device InfluxDB queries for the interface  ``8``
                              up/down and boot time metrics.
-============================ ============================================================ ===================================================
+``INFLUXDB_HOST``            InfluxDB hostname. **Required** — default baked into the      ``influxdb``
+                             Docker image, not the Python code.
+``INFLUXDB_PORT``            InfluxDB port. **Required** — default baked into the Docker   ``8086``
+                             image, not the Python code.
+``INFLUXDB_NAME``            InfluxDB database name. **Required** — default baked into     ``openwisp``
+                             the Docker image, not the Python code.
+``INFLUXDB_USER``            InfluxDB username. **Required** — default baked into the      ``admin``
+                             Docker image, not the Python code.
+``INFLUXDB_PASS``            InfluxDB password. **Required** — default baked into the      ``admin``
+                             Docker image, not the Python code.
+``INFLUXDB_TIMEOUT``         Per-query InfluxDB timeout in seconds.                        ``30``
+============================ ============================================================= ================================================
 
 Deploying with docker-openwisp
 ------------------------------
@@ -110,6 +138,7 @@ the same ``.env`` as the other services)::
       depends_on:
         - api
         - vmagent
+        - influxdb
       env_file:
         - .env
 

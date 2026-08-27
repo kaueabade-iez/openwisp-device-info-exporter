@@ -7,8 +7,16 @@ Thank you for your interest in contributing to
 Quick start
 -----------
 
-The exporter uses only the Python standard library, so no runtime dependencies
-need to be installed.
+Setup and activate a virtual environment (we'll be using `virtualenv
+<https://pypi.org/project/virtualenv/>`_)::
+
+    python -m virtualenv env
+    source env/bin/activate
+
+Install the runtime dependency (needed to import ``exporter.py`` and to run
+the exporter locally)::
+
+    pip install -r requirements.txt
 
 Development tooling::
 
@@ -28,5 +36,6 @@ Coding style
 ------------
 
 - Code is formatted with `black <https://github.com/psf/black>`_.
-- Keep the exporter dependency-free (standard library only) so the image stays
-  minimal and requires no pip install.
+- At most one *direct* third-party dependency, ``influxdb``, pinned to match
+  ``openwisp-monitoring/requirements.txt``'s own version exactly — bump the
+  two together, don't add other dependencies without discussion.
