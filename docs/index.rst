@@ -28,17 +28,18 @@ A second, related gap is interface state: OpenWISP's InfluxDB writer
 data blob, which OpenWISP writes to the short-lived ``short`` retention policy
 (24h by default) as one opaque JSON field; the InfluxDB subscription forwards
 only the ``autogen`` retention policy, so this data never reaches external
-VictoriaMetrics. There is no bulk API for it, so the exporter reads it directly
-from each device's monitoring status endpoint
-(``GET /api/v1/monitoring/device/<pk>/?status=true``), one request per device
-per cycle, and publishes::
+VictoriaMetrics. There is no bulk API for it, so the exporter reads it
+directly from InfluxDB's ``short`` retention policy, where openwisp-monitoring
+already writes this exact data on every device check-in (see `README
+<../README.rst>`_ for why this reads InfluxDB directly rather than the REST
+status endpoint) and publishes::
 
     openwisp_interface_up{object_id="<uuid>", ifname="<name>"} 1
 
 A third, related gap is boot time: OpenWISP's InfluxDB writer never emits a
 boot/uptime metric either, and there is no direct boot-timestamp field in the
-API. The same monitoring status payload used for the interface metric also
-carries a ``general`` block with two integers: ``uptime`` (seconds since boot)
+API. The same InfluxDB ``device_data`` payload used for the interface metric
+also carries a ``general`` block with two integers: ``uptime`` (seconds since boot)
 and ``local_time`` (the device's Unix timestamp at the moment of the
 measurement). Both are captured at the same instant, so their difference is
 the boot epoch and is immune to how stale the cached snapshot is — as the
@@ -53,59 +54,19 @@ Architecture
 ::
 
     exporter --(internal)--> api.internal     (device list, Bearer token)
-             --(internal)--> api.internal     (per-device status, Bearer token, threaded)
+             --(internal)--> influxdb:8086/query (per-device device_data point, threaded)
              --(internal)--> vmagent:8429/api/v1/import/prometheus
                                   └--> external VictoriaMetrics (remote_write)
 
 Each cycle, the exporter fetches the device list once and reuses it for all
-three metrics: it pushes the device info metric first, then fetches every
-device's monitoring status concurrently (bounded by
-``INTERFACE_UP_MAX_WORKERS``) — a single request per device yields both its
+three metrics: it pushes the device info metric first, then queries InfluxDB
+for every device's ``device_data`` point concurrently (bounded by
+``DEVICE_INFO_MAX_WORKERS``) — a single query per device yields both its
 interface list and its ``general`` block — and pushes the interface up/down
 and boot time metrics from that one pass. All metrics are pushed to
 ``vmagent``'s Prometheus import endpoint, which forwards them to
 VictoriaMetrics reusing ``vmagent``'s disk buffering and remote_write
-authentication. Only the Python standard library is used.
-
-Interface up/down semantics
-----------------------------
-
-- Labels are only ``object_id`` and ``ifname`` — the device name is *not*
-  duplicated onto this metric; join it at query time (see below), exactly like
-  the other forwarded metrics.
-- A series is only emitted for an interface actually observed in the current
-  cycle: value ``1`` if up, ``0`` if down.
-- If a device's status request fails (device unreachable, timeout, error
-  response), that device's interfaces are skipped for the cycle — the exporter
-  does **not** synthesize a ``0``, because it cannot enumerate the device's
-  interfaces and reporting "unknown" as "down" would be misleading. Their
-  series simply stop updating and fall out of VictoriaMetrics' default 5-minute
-  staleness window, so instant queries drop them after ~5 minutes rather than
-  showing a stale wrong value. At the default 120s interval that tolerates
-  roughly two missed cycles before a transiently-unreachable device's
-  interfaces disappear from instant queries.
-- One failing device never aborts the cycle: each per-device fetch is isolated
-  and errors are logged individually.
-
-Boot time semantics
---------------------
-
-- The only label is ``object_id`` — join the device name at query time (see
-  below), like the other forwarded metrics.
-- A series is only emitted for a device where both ``general.local_time`` and
-  ``general.uptime`` are present in the current cycle's status payload. If the
-  device is unreachable or ``general`` is missing either field, the exporter
-  emits nothing for it rather than falling back to ``now() - uptime``, which
-  would fabricate a value skewed by exporter/device clock drift; the series
-  simply goes stale and falls out of instant queries after VictoriaMetrics'
-  default 5-minute staleness window.
-- Because the boot timestamp is stable while a device stays up, staleness only
-  matters right after a reboot or when a device drops off — both acceptable at
-  the default 120s interval, well under the 5-minute lookback.
-- Correctness depends on the device's clock being NTP-synced; a device with a
-  wrong clock will report a wrong boot timestamp (though it will still be
-  internally consistent, since both ``local_time`` and ``uptime`` come from
-  the same clock).
+authentication.
 
 Configuration
 -------------
@@ -120,9 +81,6 @@ Attach the device name to any metric at query time with a ``group_left`` join
 (evaluated server-side by VictoriaMetrics)::
 
     traffic_rx_bytes * on(object_id) group_left(name) openwisp_device_info
-
-In Grafana, use ``{{name}}`` in the panel legend. Swap ``name`` for ``group``,
-``model`` or ``os`` to group by those attributes instead.
 
 To avoid repeating the join, you can define a MetricsQL ``WITH`` template::
 

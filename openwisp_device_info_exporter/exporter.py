@@ -9,6 +9,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from influxdb import InfluxDBClient
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("openwisp_device_info_exporter")
 
@@ -27,6 +29,16 @@ INTERVAL = int(os.environ.get("DEVICE_INFO_INTERVAL", "120"))
 PAGE_SIZE = int(os.environ.get("DEVICE_INFO_PAGE_SIZE", "100"))
 HTTP_TIMEOUT = int(os.environ.get("DEVICE_INFO_HTTP_TIMEOUT", "30"))
 MAX_WORKERS = int(os.environ.get("DEVICE_INFO_MAX_WORKERS", "8"))
+
+INFLUXDB_HOST = os.environ["INFLUXDB_HOST"]
+INFLUXDB_PORT = int(os.environ["INFLUXDB_PORT"])
+INFLUXDB_NAME = os.environ["INFLUXDB_NAME"]
+INFLUXDB_USER = os.environ["INFLUXDB_USER"]
+INFLUXDB_PASS = os.environ["INFLUXDB_PASS"]
+INFLUXDB_TIMEOUT = int(os.environ.get("INFLUXDB_TIMEOUT", "30"))
+
+INFLUXDB_SHORT_RP = "short"
+INFLUXDB_DEVICE_DATA_MEASUREMENT = "device_data"
 
 METRIC_NAME = "openwisp_device_info"
 INTERFACE_METRIC_NAME = "openwisp_interface_up"
@@ -88,17 +100,28 @@ def build_device_info_exposition(devices):
 
 
 def fetch_status(device):
-    """Fetch the status data blob from a device's monitoring status endpoint."""
-    headers = {"Authorization": f"Bearer {OPENWISP_API_TOKEN}"}
-    if OPENWISP_API_HOST:
-        headers["Host"] = OPENWISP_API_HOST
-    url = (
-        f"{OPENWISP_API_INTERNAL}/api/v1/monitoring/device/{device['id']}/?status=true"
+    """Fetch the status data blob directly from InfluxDB.
+
+    openwisp-monitoring writes this blob to the ``short`` retention
+    policy's ``device_data`` measurement on every device check-in.
+    """
+    client = InfluxDBClient(
+        host=INFLUXDB_HOST,
+        port=INFLUXDB_PORT,
+        username=INFLUXDB_USER,
+        password=INFLUXDB_PASS,
+        database=INFLUXDB_NAME,
+        timeout=INFLUXDB_TIMEOUT,
+        retries=1,
     )
-    req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-        payload = json.load(resp)
-    return payload.get("data") or {}
+    query = (
+        f"SELECT data FROM {INFLUXDB_SHORT_RP}.{INFLUXDB_DEVICE_DATA_MEASUREMENT} "
+        f"WHERE pk = '{device['id']}' ORDER BY time DESC LIMIT 1"
+    )
+    points = list(client.query(query).get_points())
+    if not points:
+        return {}
+    return json.loads(points[0]["data"])
 
 
 def collect_status(devices):
